@@ -1,4 +1,4 @@
-package raftutil
+package migrator
 
 import (
 	"path/filepath"
@@ -137,4 +137,8 @@ func (m *Migrator) migrateStableStore() error {
 			return nil
 		}
 	}
+}
+
+func (m *Migrator) Migrate() error {
+	return m.migrateStableStore()
 }
