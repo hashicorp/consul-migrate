@@ -5,7 +5,7 @@ import (
 	"runtime"
 
 	"github.com/armon/gomdb"
-	"github.com/boltdb/bolt"
+	"github.com/hashicorp/raft-boltdb"
 )
 
 const (
@@ -17,7 +17,6 @@ const (
 	mdbMode = 0755
 
 	boltFilename = "raft.db"
-	boltFileMode = 0600
 
 	// Maximum log sizes for LMDB. These mirror settings in Consul
 	// and are automatically set based on the runtime.
@@ -26,9 +25,9 @@ const (
 )
 
 type Migrator struct {
-	dataDir string
-	mdb     *mdb.Env
-	bolt    *bolt.DB
+	dataDir   string
+	mdb       *mdb.Env
+	boltStore *raftboltdb.BoltStore
 }
 
 func NewMigrator(dataDir string) (*Migrator, error) {
@@ -56,6 +55,11 @@ func (m *Migrator) mdbConnect() error {
 		return err
 	}
 
+	// Allow 2 sub-dbs
+	if err := env.SetMaxDBs(mdb.DBI(2)); err != nil {
+		return err
+	}
+
 	// Calculate and set the max size
 	size := maxLogSize32bit
 	if runtime.GOARCH == "amd64" {
@@ -66,7 +70,7 @@ func (m *Migrator) mdbConnect() error {
 	}
 
 	// Open the connection
-	err = env.Open(filepath.Join(m.dataDir, mdbPath), mdb.NOTLS, mdbMode)
+	err = env.Open(filepath.Join(m.dataDir, raftPath, mdbPath), mdb.NOTLS, mdbMode)
 	if err != nil {
 		return err
 	}
@@ -77,26 +81,19 @@ func (m *Migrator) mdbConnect() error {
 }
 
 func (m *Migrator) boltConnect() error {
-	// Connect to the new bolt raft store
-	file := filepath.Join(m.dataDir, raftPath, boltFilename)
-	b, err := bolt.Open(file, boltFileMode, nil)
+	// Connect to the new BoltStore
+	raftFile := filepath.Join(m.dataDir, raftPath, boltFilename)
+	store, err := raftboltdb.NewBoltStore(raftFile)
 	if err != nil {
 		return err
 	}
-	m.bolt = b
+
+	m.boltStore = store
 	return nil
 }
 
 func (m *Migrator) migrateStableStore() error {
-	// Begin a new BoltDB transaction
-	btx, err := m.bolt.Begin(true)
-	if err != nil {
-		return err
-	}
-	defer btx.Rollback()
-	bucket := btx.Bucket([]byte(dbConf))
-
-	// Begin a transaction
+	// Begin a new MDB transaction
 	mtx, err := m.mdb.BeginTxn(nil, mdb.RDONLY)
 	if err != nil {
 		return err
@@ -127,14 +124,18 @@ func (m *Migrator) migrateStableStore() error {
 		if err != nil {
 			return err
 		}
-		if err := bucket.Put(k, v); err != nil {
+
+		// Write the value into the BoltStore
+		if err := m.boltStore.Set(k, v); err != nil {
 			return err
 		}
-		if err := btx.Commit(); err != nil {
+
+		// Move the cursor to the next entry
+		if k, _, err := mcurs.Get(nil, mdb.NEXT); err != nil {
+			if err == mdb.NotFound || len(k) == 0 {
+				return nil
+			}
 			return err
-		}
-		if _, _, err := mcurs.Get(nil, mdb.NEXT); err != nil {
-			return nil
 		}
 	}
 }
