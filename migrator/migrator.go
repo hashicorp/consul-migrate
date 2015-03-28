@@ -1,10 +1,13 @@
 package migrator
 
 import (
+	"bytes"
 	"path/filepath"
 	"runtime"
 
 	"github.com/armon/gomdb"
+	"github.com/hashicorp/go-msgpack/codec"
+	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-boltdb"
 )
 
@@ -140,6 +143,74 @@ func (m *Migrator) migrateStableStore() error {
 	}
 }
 
+func (m *Migrator) migrateLogStore() error {
+	// Begin a new MDB transaction
+	mtx, err := m.mdb.BeginTxn(nil, mdb.RDONLY)
+	if err != nil {
+		return err
+	}
+
+	// Open the sub-db
+	dbi, err := mtx.DBIOpen(dbLogs, 0)
+	if err != nil {
+		mtx.Abort()
+		return err
+	}
+	defer mtx.Abort()
+
+	// Get a new cursor and seek to the first key
+	mcurs, err := mtx.CursorOpen(dbi)
+	if err != nil {
+		return err
+	}
+	if _, _, err := mcurs.Get(nil, mdb.FIRST); err != nil {
+		return err
+	}
+
+	// Loop through all of the keys, writing them out to the bolt store
+	// as we go. We will stop when we reach the end of the StableStore.
+	for {
+		// Get the current key
+		_, v, err := mcurs.Get(nil, mdb.GET_CURRENT)
+		if err != nil {
+			return err
+		}
+
+		// Decode the log message
+		log := &raft.Log{}
+		if err := decodeMsgPack(v, log); err != nil {
+			return err
+		}
+
+		// Write the value into the BoltStore
+		if err := m.boltStore.StoreLog(log); err != nil {
+			return err
+		}
+
+		// Move the cursor to the next entry
+		if k, _, err := mcurs.Get(nil, mdb.NEXT); err != nil {
+			if err == mdb.NotFound || len(k) == 0 {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
 func (m *Migrator) Migrate() error {
-	return m.migrateStableStore()
+	if err := m.migrateStableStore(); err != nil {
+		return err
+	}
+	if err := m.migrateLogStore(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// decodeMsgPack decodes a msgpack byte sequence
+func decodeMsgPack(buf []byte, out interface{}) error {
+	r := bytes.NewBuffer(buf)
+	hd := codec.MsgpackHandle{}
+	dec := codec.NewDecoder(r, &hd)
+	return dec.Decode(out)
 }
