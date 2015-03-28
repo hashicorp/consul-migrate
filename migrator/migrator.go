@@ -2,6 +2,7 @@ package migrator
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"runtime"
 
@@ -16,9 +17,11 @@ const (
 	dbConf   = "conf"
 	raftPath = "raft"
 
+	// MDB path and permission settings.
 	mdbPath = "mdb"
 	mdbMode = 0755
 
+	// The name of the BoltDB file in the raft path
 	boltFilename = "raft.db"
 
 	// Maximum log sizes for LMDB. These mirror settings in Consul
@@ -27,12 +30,19 @@ const (
 	maxLogSize64bit uint64 = 64 * 1024 * 1024 * 1024
 )
 
+// Migrator is used to migrate the Consul data storage format on
+// servers with versions <= 0.5.0. Consul versions >= 0.5.1 use
+// BoltDB internally as the store for the Raft log. During this
+// transition, it is necessary to copy data out of our LMDB store
+// and create a new BoltStore with the same data.
 type Migrator struct {
-	dataDir   string
-	mdb       *mdb.Env
-	boltStore *raftboltdb.BoltStore
+	dataDir   string                // The Consul data-dir
+	mdb       *mdb.Env              // The legacy MDB environment
+	boltStore *raftboltdb.BoltStore // Handle for the new store
 }
 
+// NewMigrator creates a new Migrator given the path to a Consul
+// data-dir. Returns the new Migrator and any error.
 func NewMigrator(dataDir string) (*Migrator, error) {
 	// Create the struct
 	m := &Migrator{
@@ -51,6 +61,9 @@ func NewMigrator(dataDir string) (*Migrator, error) {
 	return m, nil
 }
 
+// mdbConnect is used to open a handle on our LMDB database. It is
+// necessary to use a raw MDB connection here because the Raft
+// interface alone does not lend itself to this migration task.
 func (m *Migrator) mdbConnect() error {
 	// Create the env
 	env, err := mdb.NewEnv()
@@ -83,6 +96,9 @@ func (m *Migrator) mdbConnect() error {
 	return nil
 }
 
+// boltConnect creates a new BoltStore to copy our data into. We can
+// use the BoltStore directly because it provides simple setter
+// methods, provided our keys and values are known.
 func (m *Migrator) boltConnect() error {
 	// Connect to the new BoltStore
 	raftFile := filepath.Join(m.dataDir, raftPath, boltFilename)
@@ -95,6 +111,10 @@ func (m *Migrator) boltConnect() error {
 	return nil
 }
 
+// migrateStableStore is used to migrate our base key/value store. It
+// uses a cursor to seek to the front of the store and iterate over
+// everything so that we can easily get all of our known k/v pairs
+// and copy them into the new BoltStore.
 func (m *Migrator) migrateStableStore() error {
 	// Begin a new MDB transaction
 	mtx, err := m.mdb.BeginTxn(nil, mdb.RDONLY)
@@ -143,6 +163,8 @@ func (m *Migrator) migrateStableStore() error {
 	}
 }
 
+// migrateLogStore is like migrateStableStore, but iterates over
+// all of our Raft logs and copies them into the new BoltStore.
 func (m *Migrator) migrateLogStore() error {
 	// Begin a new MDB transaction
 	mtx, err := m.mdb.BeginTxn(nil, mdb.RDONLY)
@@ -197,11 +219,18 @@ func (m *Migrator) migrateLogStore() error {
 	}
 }
 
+// Migrate is the high-level function we call when we want to attempt
+// to migrate all of our LMDB data into BoltDB. If an error is
+// encountered, the BoltStore is nuked from disk, since it is useless.
+// The migration can be attempted again, as the LMDB data should
+// still be intact.
 func (m *Migrator) Migrate() error {
 	if err := m.migrateStableStore(); err != nil {
+		os.Remove(filepath.Join(m.dataDir, raftPath, boltFilename))
 		return err
 	}
 	if err := m.migrateLogStore(); err != nil {
+		os.Remove(filepath.Join(m.dataDir, raftPath, boltFilename))
 		return err
 	}
 	return nil
