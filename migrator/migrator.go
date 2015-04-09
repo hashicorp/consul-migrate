@@ -1,13 +1,11 @@
 package migrator
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 
-	"github.com/hashicorp/go-msgpack/codec"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-boltdb"
@@ -184,12 +182,4 @@ func (m *Migrator) Close() error {
 		multierror.Append(result, err)
 	}
 	return result
-}
-
-// decodeMsgPack decodes a msgpack byte sequence
-func decodeMsgPack(buf []byte, out interface{}) error {
-	r := bytes.NewBuffer(buf)
-	hd := codec.MsgpackHandle{}
-	dec := codec.NewDecoder(r, &hd)
-	return dec.Decode(out)
 }
