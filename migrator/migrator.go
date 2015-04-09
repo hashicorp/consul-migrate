@@ -2,24 +2,21 @@ package migrator
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 
-	"github.com/armon/gomdb"
 	"github.com/hashicorp/go-msgpack/codec"
+	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-boltdb"
+	"github.com/hashicorp/raft-mdb"
 )
 
 const (
-	dbLogs   = "logs"
-	dbConf   = "conf"
+	// Path to the raft directory
 	raftPath = "raft"
-
-	// MDB path and permission settings.
-	mdbPath = "mdb"
-	mdbMode = 0755
 
 	// The name of the BoltDB file in the raft path
 	boltFilename = "raft.db"
@@ -30,6 +27,11 @@ const (
 	maxLogSize64bit uint64 = 64 * 1024 * 1024 * 1024
 )
 
+var (
+	errFirstIndexZero = errors.New("No logs found (first index was 0)")
+	errLastIndexZero  = errors.New("No logs found (last index was 0)")
+)
+
 // Migrator is used to migrate the Consul data storage format on
 // servers with versions <= 0.5.0. Consul versions >= 0.5.1 use
 // BoltDB internally as the store for the Raft log. During this
@@ -37,7 +39,7 @@ const (
 // and create a new BoltStore with the same data.
 type Migrator struct {
 	dataDir   string                // The Consul data-dir
-	mdb       *mdb.Env              // The legacy MDB environment
+	mdbStore  *raftmdb.MDBStore     // The legacy MDB environment
 	boltStore *raftboltdb.BoltStore // Handle for the new store
 }
 
@@ -65,34 +67,21 @@ func NewMigrator(dataDir string) (*Migrator, error) {
 // necessary to use a raw MDB connection here because the Raft
 // interface alone does not lend itself to this migration task.
 func (m *Migrator) mdbConnect() error {
-	// Create the env
-	env, err := mdb.NewEnv()
-	if err != nil {
-		return err
-	}
-
-	// Allow 2 sub-dbs
-	if err := env.SetMaxDBs(mdb.DBI(2)); err != nil {
-		return err
-	}
-
 	// Calculate and set the max size
 	size := maxLogSize32bit
 	if runtime.GOARCH == "amd64" {
 		size = maxLogSize64bit
 	}
-	if err := env.SetMapSize(size); err != nil {
-		return err
-	}
 
 	// Open the connection
-	err = env.Open(filepath.Join(m.dataDir, raftPath, mdbPath), mdb.NOTLS, mdbMode)
+	dbPath := filepath.Join(m.dataDir, raftPath)
+	mdb, err := raftmdb.NewMDBStoreWithSize(dbPath, size)
 	if err != nil {
 		return err
 	}
 
 	// Return the new environment
-	m.mdb = env
+	m.mdbStore = mdb
 	return nil
 }
 
@@ -111,112 +100,36 @@ func (m *Migrator) boltConnect() error {
 	return nil
 }
 
-// migrateStableStore is used to migrate our base key/value store. It
-// uses a cursor to seek to the front of the store and iterate over
-// everything so that we can easily get all of our known k/v pairs
-// and copy them into the new BoltStore.
-func (m *Migrator) migrateStableStore() error {
-	// Begin a new MDB transaction
-	mtx, err := m.mdb.BeginTxn(nil, mdb.RDONLY)
-	if err != nil {
-		return err
-	}
-
-	// Open the sub-db
-	dbi, err := mtx.DBIOpen(dbConf, 0)
-	if err != nil {
-		mtx.Abort()
-		return err
-	}
-	defer mtx.Abort()
-
-	// Get a new cursor and seek to the first key
-	mcurs, err := mtx.CursorOpen(dbi)
-	if err != nil {
-		return err
-	}
-	if _, _, err := mcurs.Get(nil, mdb.FIRST); err != nil {
-		return err
-	}
-
-	// Loop through all of the keys, writing them out to the bolt store
-	// as we go. We will stop when we reach the end of the StableStore.
-	for {
-		// Get the current key
-		k, v, err := mcurs.Get(nil, mdb.GET_CURRENT)
-		if err != nil {
-			return err
-		}
-
-		// Write the value into the BoltStore
-		if err := m.boltStore.Set(k, v); err != nil {
-			return err
-		}
-
-		// Move the cursor to the next entry
-		if k, _, err := mcurs.Get(nil, mdb.NEXT); err != nil {
-			if err == mdb.NotFound || len(k) == 0 {
-				return nil
-			}
-			return err
-		}
-	}
-}
-
 // migrateLogStore is like migrateStableStore, but iterates over
 // all of our Raft logs and copies them into the new BoltStore.
 func (m *Migrator) migrateLogStore() error {
-	// Begin a new MDB transaction
-	mtx, err := m.mdb.BeginTxn(nil, mdb.RDONLY)
+	first, err := m.mdbStore.FirstIndex()
 	if err != nil {
 		return err
 	}
-
-	// Open the sub-db
-	dbi, err := mtx.DBIOpen(dbLogs, 0)
-	if err != nil {
-		mtx.Abort()
-		return err
+	if first == 0 {
+		return errFirstIndexZero
 	}
-	defer mtx.Abort()
 
-	// Get a new cursor and seek to the first key
-	mcurs, err := mtx.CursorOpen(dbi)
+	last, err := m.mdbStore.LastIndex()
 	if err != nil {
 		return err
 	}
-	if _, _, err := mcurs.Get(nil, mdb.FIRST); err != nil {
-		return err
+	if last == 0 {
+		return errLastIndexZero
 	}
 
-	// Loop through all of the keys, writing them out to the bolt store
-	// as we go. We will stop when we reach the end of the StableStore.
-	for {
-		// Get the current key
-		_, v, err := mcurs.Get(nil, mdb.GET_CURRENT)
-		if err != nil {
-			return err
-		}
-
-		// Decode the log message
+	for i := first; i <= last; i++ {
 		log := &raft.Log{}
-		if err := decodeMsgPack(v, log); err != nil {
+		if err := m.mdbStore.GetLog(i, log); err != nil {
 			return err
 		}
-
-		// Write the value into the BoltStore
 		if err := m.boltStore.StoreLog(log); err != nil {
 			return err
 		}
-
-		// Move the cursor to the next entry
-		if k, _, err := mcurs.Get(nil, mdb.NEXT); err != nil {
-			if err == mdb.NotFound || len(k) == 0 {
-				return nil
-			}
-			return err
-		}
 	}
+
+	return nil
 }
 
 // Migrate is the high-level function we call when we want to attempt
@@ -225,15 +138,23 @@ func (m *Migrator) migrateLogStore() error {
 // The migration can be attempted again, as the LMDB data should
 // still be intact.
 func (m *Migrator) Migrate() error {
-	if err := m.migrateStableStore(); err != nil {
-		os.Remove(filepath.Join(m.dataDir, raftPath, boltFilename))
-		return err
-	}
 	if err := m.migrateLogStore(); err != nil {
 		os.Remove(filepath.Join(m.dataDir, raftPath, boltFilename))
 		return err
 	}
 	return nil
+}
+
+// Close closes the handles to our underlying raft back-ends.
+func (m *Migrator) Close() error {
+	var result *multierror.Error
+	if err := m.mdbStore.Close(); err != nil {
+		multierror.Append(result, err)
+	}
+	if err := m.boltStore.Close(); err != nil {
+		multierror.Append(result, err)
+	}
+	return result
 }
 
 // decodeMsgPack decodes a msgpack byte sequence

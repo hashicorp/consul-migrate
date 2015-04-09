@@ -28,6 +28,7 @@ func realMain(args []string) int {
 		fmt.Println(err.Error())
 		return 1
 	}
+	defer m.Close()
 
 	if err := m.Migrate(); err != nil {
 		fmt.Println(err.Error())
