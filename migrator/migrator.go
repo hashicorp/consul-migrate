@@ -2,7 +2,7 @@ package migrator
 
 import (
 	"bytes"
-	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,8 +28,18 @@ const (
 )
 
 var (
-	errFirstIndexZero = errors.New("No logs found (first index was 0)")
-	errLastIndexZero  = errors.New("No logs found (last index was 0)")
+	// Common error messages from migrator
+	errFirstIndexZero = fmt.Errorf("No logs found (first index was 0)")
+	errLastIndexZero  = fmt.Errorf("No logs found (last index was 0)")
+
+	// stableStoreKeys are the well-known keys written to the
+	// stable store, and are used internally by Raft. We hard-code
+	// them here so that we can copy them explicitly.
+	stableStoreKeys [][]byte = [][]byte{
+		[]byte("CurrentTerm"),
+		[]byte("LastVoteTerm"),
+		[]byte("LastVoteCand"),
+	}
 )
 
 // Migrator is used to migrate the Consul data storage format on
@@ -100,6 +110,22 @@ func (m *Migrator) boltConnect() error {
 	return nil
 }
 
+// migrateStableStore copies values out of the origin StableStore
+// and writes them into the destination. There are only a handful
+// of keys we need, so we copy them explicitly.
+func (m *Migrator) migrateStableStore() error {
+	for _, key := range stableStoreKeys {
+		val, err := m.mdbStore.Get(key)
+		if err != nil {
+			return err
+		}
+		if err := m.boltStore.Set(key, val); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // migrateLogStore is like migrateStableStore, but iterates over
 // all of our Raft logs and copies them into the new BoltStore.
 func (m *Migrator) migrateLogStore() error {
@@ -128,7 +154,6 @@ func (m *Migrator) migrateLogStore() error {
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -138,9 +163,13 @@ func (m *Migrator) migrateLogStore() error {
 // The migration can be attempted again, as the LMDB data should
 // still be intact.
 func (m *Migrator) Migrate() error {
+	if err := m.migrateStableStore(); err != nil {
+		os.Remove(filepath.Join(m.dataDir, raftPath, boltFilename))
+		return fmt.Errorf("Failed to migrate stable store: %v", err)
+	}
 	if err := m.migrateLogStore(); err != nil {
 		os.Remove(filepath.Join(m.dataDir, raftPath, boltFilename))
-		return err
+		return fmt.Errorf("Failed to migrate log store: %v", err)
 	}
 	return nil
 }
