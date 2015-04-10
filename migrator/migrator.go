@@ -13,14 +13,15 @@ import (
 
 const (
 	// Path to the raft directory
-	raftPath = "raft"
+	raftDir = "raft"
 
 	// Path to the legacy MDB data and its backup location
-	mdbPath       = "mdb"
-	mdbBackupPath = "mdb.backup"
+	mdbDir       = "mdb"
+	mdbBackupDir = "mdb.backup"
 
 	// The name of the BoltDB file in the raft path
-	boltFilename = "raft.db"
+	boltFile     = "raft.db"
+	boltTempFile = "raft.db.temp"
 
 	// Maximum log sizes for LMDB. These mirror settings in Consul
 	// and are automatically set based on the runtime.
@@ -52,6 +53,13 @@ type Migrator struct {
 	dataDir   string                // The Consul data-dir
 	mdbStore  *raftmdb.MDBStore     // The legacy MDB environment
 	boltStore *raftboltdb.BoltStore // Handle for the new store
+
+	// Calculated paths based on the data dir
+	raftPath      string
+	mdbPath       string
+	mdbBackupPath string
+	boltPath      string
+	boltTempPath  string
 }
 
 // New creates a new Migrator given the path to a Consul
@@ -65,6 +73,12 @@ func New(dataDir string) (*Migrator, error) {
 	// Create the struct
 	m := &Migrator{
 		dataDir: dataDir,
+
+		raftPath:      filepath.Join(dataDir, raftDir),
+		mdbPath:       filepath.Join(dataDir, raftDir, mdbDir),
+		mdbBackupPath: filepath.Join(dataDir, raftDir, mdbBackupDir),
+		boltPath:      filepath.Join(dataDir, raftDir, boltFile),
+		boltTempPath:  filepath.Join(dataDir, raftDir, boltTempFile),
 	}
 
 	return m, nil
@@ -73,7 +87,7 @@ func New(dataDir string) (*Migrator, error) {
 // mdbConnect is used to open a handle on our LMDB database. It is
 // necessary to use a raw MDB connection here because the Raft
 // interface alone does not lend itself to this migration task.
-func (m *Migrator) mdbConnect() error {
+func (m *Migrator) mdbConnect(dir string) error {
 	// Calculate and set the max size
 	size := maxLogSize32bit
 	if runtime.GOARCH == "amd64" {
@@ -81,7 +95,6 @@ func (m *Migrator) mdbConnect() error {
 	}
 
 	// Open the connection
-	dir := filepath.Join(m.dataDir, raftPath)
 	mdb, err := raftmdb.NewMDBStoreWithSize(dir, size)
 	if err != nil {
 		return err
@@ -95,9 +108,8 @@ func (m *Migrator) mdbConnect() error {
 // boltConnect creates a new BoltStore to copy our data into. We can
 // use the BoltStore directly because it provides simple setter
 // methods, provided our keys and values are known.
-func (m *Migrator) boltConnect() error {
+func (m *Migrator) boltConnect(file string) error {
 	// Connect to the new BoltStore
-	file := filepath.Join(m.dataDir, raftPath, boltFilename)
 	store, err := raftboltdb.NewBoltStore(file)
 	if err != nil {
 		return err
@@ -157,15 +169,6 @@ func (m *Migrator) migrateLogStore() error {
 	return nil
 }
 
-// archiveMDB moves the original MDB data directory to an archived
-// version. This allows the migrator to return fast if the data
-// has already been migrated to BoltDB.
-func (m *Migrator) archiveMDB() error {
-	orig := filepath.Join(m.dataDir, raftPath, mdbPath)
-	backup := filepath.Join(m.dataDir, raftPath, mdbBackupPath)
-	return os.Rename(orig, backup)
-}
-
 // Migrate is the high-level function we call when we want to attempt
 // to migrate all of our LMDB data into BoltDB. If an error is
 // encountered, the BoltStore is nuked from disk, since it is useless.
@@ -173,12 +176,9 @@ func (m *Migrator) archiveMDB() error {
 // still be intact. Returns a bool indicating whether a migration
 // was completed, and any error.
 func (m *Migrator) Migrate() (bool, error) {
-	boltFile := filepath.Join(m.dataDir, raftPath, boltFilename)
-	mdbDir := filepath.Join(m.dataDir, raftPath, mdbPath)
-
 	// Check if we should attempt a migration
-	if _, err := os.Stat(mdbDir); os.IsNotExist(err) {
-		if _, err := os.Stat(boltFile); os.IsNotExist(err) {
+	if _, err := os.Stat(m.mdbPath); os.IsNotExist(err) {
+		if _, err := os.Stat(m.boltPath); os.IsNotExist(err) {
 			return false, fmt.Errorf(
 				"Directory '%s' is not a consul data dir", m.dataDir)
 		}
@@ -186,32 +186,38 @@ func (m *Migrator) Migrate() (bool, error) {
 	}
 
 	// Connect the stores
-	if err := m.mdbConnect(); err != nil {
+	if err := m.mdbConnect(m.raftPath); err != nil {
 		return false, fmt.Errorf("Failed to connect MDB: %s", err)
 	}
 	defer m.mdbStore.Close()
 
-	if err := m.boltConnect(); err != nil {
+	if err := m.boltConnect(m.boltTempPath); err != nil {
 		return false, fmt.Errorf("Failed to connect BoltDB: %s", err)
 	}
 	defer m.boltStore.Close()
 
 	// Migrate the stable store
 	if err := m.migrateStableStore(); err != nil {
-		os.Remove(boltFile)
+		os.Remove(m.boltTempPath)
 		return false, fmt.Errorf("Failed to migrate stable store: %v", err)
 	}
 
 	// Migrate the log store
 	if err := m.migrateLogStore(); err != nil {
-		os.Remove(boltFile)
+		os.Remove(m.boltTempPath)
 		return false, fmt.Errorf("Failed to migrate log store: %v", err)
 	}
 
+	// Activate the new BoltDB file
+	if err := os.Rename(m.boltTempPath, m.boltPath); err != nil {
+		os.Remove(m.boltTempPath)
+		return false, fmt.Errorf("Failed to move BoltDB file: %s", err)
+	}
+
 	// Move the old MDB dir to its backup location
-	if err := m.archiveMDB(); err != nil {
-		os.Remove(boltFile)
-		return false, fmt.Errorf("Failed to backup MDB: %v", err)
+	if err := os.Rename(m.mdbPath, m.mdbBackupPath); err != nil {
+		os.Remove(m.boltTempPath)
+		return false, fmt.Errorf("Failed to move MDB dir: %v", err)
 	}
 	return true, nil
 }
