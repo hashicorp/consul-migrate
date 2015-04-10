@@ -115,10 +115,13 @@ func (m *Migrator) migrateStableStore() error {
 	for _, key := range stableStoreKeys {
 		val, err := m.mdbStore.Get(key)
 		if err != nil {
-			return err
+			if err.Error() != "not found" {
+				return fmt.Errorf("Error getting key '%s': %s", string(key), err)
+			}
+			continue
 		}
 		if err := m.boltStore.Set(key, val); err != nil {
-			return err
+			return fmt.Errorf("Error storing key '%s': %s", string(key), err)
 		}
 	}
 	return nil
