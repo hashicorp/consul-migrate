@@ -84,9 +84,8 @@ func New(dataDir string) (*Migrator, error) {
 	return m, nil
 }
 
-// mdbConnect is used to open a handle on our LMDB database. It is
-// necessary to use a raw MDB connection here because the Raft
-// interface alone does not lend itself to this migration task.
+// mdbConnect is used to open a handle on our LMDB raft backend. This
+// is enough to read all of the Consul data we need to migrate.
 func (m *Migrator) mdbConnect(dir string) error {
 	// Calculate and set the max size
 	size := maxLogSize32bit
