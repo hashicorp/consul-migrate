@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-boltdb"
 	"github.com/hashicorp/raft-mdb"
@@ -58,20 +57,16 @@ type Migrator struct {
 // New creates a new Migrator given the path to a Consul
 // data-dir. Returns the new Migrator and any error.
 func New(dataDir string) (*Migrator, error) {
+	// Check that the directory exists
+	if _, err := os.Stat(dataDir); err != nil {
+		return nil, err
+	}
+
 	// Create the struct
 	m := &Migrator{
 		dataDir: dataDir,
 	}
 
-	// Connect MDB
-	if err := m.mdbConnect(); err != nil {
-		return nil, err
-	}
-
-	// Connect BoltDB
-	if err := m.boltConnect(); err != nil {
-		return nil, err
-	}
 	return m, nil
 }
 
@@ -86,8 +81,8 @@ func (m *Migrator) mdbConnect() error {
 	}
 
 	// Open the connection
-	dbPath := filepath.Join(m.dataDir, raftPath)
-	mdb, err := raftmdb.NewMDBStoreWithSize(dbPath, size)
+	dir := filepath.Join(m.dataDir, raftPath)
+	mdb, err := raftmdb.NewMDBStoreWithSize(dir, size)
 	if err != nil {
 		return err
 	}
@@ -102,8 +97,8 @@ func (m *Migrator) mdbConnect() error {
 // methods, provided our keys and values are known.
 func (m *Migrator) boltConnect() error {
 	// Connect to the new BoltStore
-	raftFile := filepath.Join(m.dataDir, raftPath, boltFilename)
-	store, err := raftboltdb.NewBoltStore(raftFile)
+	file := filepath.Join(m.dataDir, raftPath, boltFilename)
+	store, err := raftboltdb.NewBoltStore(file)
 	if err != nil {
 		return err
 	}
@@ -186,30 +181,33 @@ func (m *Migrator) Migrate() (bool, error) {
 		return false, nil
 	}
 
-	// Perform the migration
+	// Connect the stores
+	if err := m.mdbConnect(); err != nil {
+		return false, fmt.Errorf("Failed to connect MDB: %s", err)
+	}
+	defer m.mdbStore.Close()
+
+	if err := m.boltConnect(); err != nil {
+		return false, fmt.Errorf("Failed to connect BoltDB: %s", err)
+	}
+	defer m.boltStore.Close()
+
+	// Migrate the stable store
 	if err := m.migrateStableStore(); err != nil {
 		os.Remove(boltFile)
 		return false, fmt.Errorf("Failed to migrate stable store: %v", err)
 	}
+
+	// Migrate the log store
 	if err := m.migrateLogStore(); err != nil {
 		os.Remove(boltFile)
 		return false, fmt.Errorf("Failed to migrate log store: %v", err)
 	}
+
+	// Move the old MDB dir to its backup location
 	if err := m.archiveMDB(); err != nil {
 		os.Remove(boltFile)
 		return false, fmt.Errorf("Failed to backup MDB: %v", err)
 	}
 	return true, nil
-}
-
-// Close closes the handles to our underlying raft back-ends.
-func (m *Migrator) Close() error {
-	var result *multierror.Error
-	if err := m.mdbStore.Close(); err != nil {
-		multierror.Append(result, err)
-	}
-	if err := m.boltStore.Close(); err != nil {
-		multierror.Append(result, err)
-	}
-	return result
 }

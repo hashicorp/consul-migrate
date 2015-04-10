@@ -50,20 +50,12 @@ func TestMigrator_new(t *testing.T) {
 		t.Fatalf("should fail")
 	}
 
-	// Create a test Raft directory
+	// Works with an existing directory
 	dir := testRaftDir(t)
 	defer os.RemoveAll(dir)
 
-	// Initializes the stores correctly
-	m, err := New(dir)
-	if err != nil {
+	if _, err := New(dir); err != nil {
 		t.Fatalf("err: %s", err)
-	}
-	if m.mdbStore == nil {
-		t.Fatalf("missing mdb store")
-	}
-	if m.boltStore == nil {
-		t.Fatalf("missing bolt store")
 	}
 }
 
@@ -76,7 +68,6 @@ func TestMigrator_migrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
-	defer m.Close()
 
 	// Perform the migration
 	if _, err := m.Migrate(); err != nil {
@@ -89,12 +80,30 @@ func TestMigrator_migrate(t *testing.T) {
 	}
 
 	// Check that the MDB store was backed up
-	if _, err := os.Stat(filepath.Join(dir, raftPath, mdbPath)); err == nil {
+	mdbPathOrig := filepath.Join(dir, raftPath, mdbPath)
+	mdbPathBackup := filepath.Join(dir, raftPath, mdbBackupPath)
+	if _, err := os.Stat(mdbPathOrig); err == nil {
 		t.Fatalf("MDB dir was not moved")
 	}
-	if _, err := os.Stat(filepath.Join(dir, raftPath, mdbBackupPath)); err != nil {
+	if _, err := os.Stat(mdbPathBackup); err != nil {
 		t.Fatalf("Missing MDB backup dir")
 	}
+
+	// Reconnect the data sources. Requires moving the MDB
+	// store back to its original location.
+	if err := os.Rename(mdbPathBackup, mdbPathOrig); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if err := m.mdbConnect(); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	defer m.mdbStore.Close()
+
+	if err := m.boltConnect(); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	defer m.boltStore.Close()
 
 	// Check that the BoltStore now has the indexes
 	mFirst, err := m.mdbStore.FirstIndex()

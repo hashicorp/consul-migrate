@@ -30,7 +30,6 @@ func realMain(args []string) int {
 		fmt.Printf("Error creating migrator: %s", err)
 		return 1
 	}
-	defer m.Close()
 
 	// Perform the migration
 	start := time.Now()
