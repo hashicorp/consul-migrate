@@ -55,9 +55,9 @@ type Migrator struct {
 	boltStore *raftboltdb.BoltStore // Handle for the new store
 }
 
-// NewMigrator creates a new Migrator given the path to a Consul
+// New creates a new Migrator given the path to a Consul
 // data-dir. Returns the new Migrator and any error.
-func NewMigrator(dataDir string) (*Migrator, error) {
+func New(dataDir string) (*Migrator, error) {
 	// Create the struct
 	m := &Migrator{
 		dataDir: dataDir,

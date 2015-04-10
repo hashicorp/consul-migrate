@@ -46,7 +46,7 @@ func testRaftDir(t *testing.T) string {
 
 func TestMigrator_new(t *testing.T) {
 	// Fails on bad data-dir
-	if _, err := NewMigrator("/leprechauns"); err == nil {
+	if _, err := New("/leprechauns"); err == nil {
 		t.Fatalf("should fail")
 	}
 
@@ -55,7 +55,7 @@ func TestMigrator_new(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	// Initializes the stores correctly
-	m, err := NewMigrator(dir)
+	m, err := New(dir)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -72,7 +72,7 @@ func TestMigrator_migrate(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	// Create the migrator
-	m, err := NewMigrator(dir)
+	m, err := New(dir)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}

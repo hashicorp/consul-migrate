@@ -24,20 +24,23 @@ func realMain(args []string) int {
 		return 0
 	}
 
-	m, err := migrator.NewMigrator(args[1])
+	// Create the migrator
+	m, err := migrator.New(args[1])
 	if err != nil {
-		fmt.Println(err.Error())
+		fmt.Printf("Error creating migrator: %s", err)
 		return 1
 	}
 	defer m.Close()
 
+	// Perform the migration
 	start := time.Now()
 	migrated, err := m.Migrate()
 	if err != nil {
-		fmt.Println(err.Error())
+		fmt.Printf("Migration failed: %s", err)
 		return 1
 	}
 
+	// Check the result
 	if migrated {
 		fmt.Printf("Migration completed in %s", time.Now().Sub(start))
 	} else {
