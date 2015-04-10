@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/raft"
@@ -178,5 +179,51 @@ func TestMigrator_migrate(t *testing.T) {
 		if !bytes.Equal(mVal, bVal) {
 			t.Fatalf("bad value for key '%s'", key)
 		}
+	}
+}
+
+func TestMigrator_migrate_fails(t *testing.T) {
+	// Create a new temp dir. We will attempt to use this
+	// as the Raft dir to create errors.
+	dir, err := ioutil.TempDir("", "consul-migrate")
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	defer os.RemoveAll(dir)
+
+	// Create the migrator
+	m, err := New(dir)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	// Create the MDB path so that the migrator will run
+	if err := os.MkdirAll(m.mdbPath, 0700); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	// Attempt the migration. This will fail.
+	migrated, err := m.Migrate()
+	if !strings.Contains(err.Error(), errFirstIndexZero.Error()) {
+		t.Fatalf("bad: %s", err)
+	}
+	if migrated {
+		t.Fatalf("should not have migrated")
+	}
+
+	// Ensure that the MDB dir was not moved
+	if _, err := os.Stat(m.mdbPath); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if _, err := os.Stat(m.mdbBackupPath); !os.IsNotExist(err) {
+		t.Fatalf("err: %s", err)
+	}
+
+	// Ensure no BoltDB files were left
+	if _, err := os.Stat(m.boltPath); !os.IsNotExist(err) {
+		t.Fatalf("err: %s", err)
+	}
+	if _, err := os.Stat(m.boltTempPath); !os.IsNotExist(err) {
+		t.Fatalf("err: %s", err)
 	}
 }
