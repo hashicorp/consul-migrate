@@ -45,6 +45,43 @@ func testRaftDir(t *testing.T) string {
 	return dir
 }
 
+// Tests our fixture data to make sure that the other tests in this file
+// are properly exercising the migrator utility.
+func TestMigrator_data(t *testing.T) {
+	dir := testRaftDir(t)
+	defer os.RemoveAll(dir)
+
+	m, err := New(dir)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if err := m.mdbConnect(m.raftPath); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	defer m.mdbStore.Close()
+
+	// Ensure we have at least a few logs in the log store
+	first, err := m.mdbStore.FirstIndex()
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	last, err := m.mdbStore.LastIndex()
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if first < 1 || last < 3 {
+		t.Fatalf("bad index: first=%d, last=%d", first, last)
+	}
+
+	// Ensure we have the stable store keys
+	for _, key := range stableStoreKeys {
+		if _, err := m.mdbStore.Get(key); err != nil {
+			t.Fatalf("missing stable store key: %s", string(key))
+		}
+	}
+}
+
 func TestMigrator_new(t *testing.T) {
 	// Fails on bad data-dir
 	if _, err := New("/leprechauns"); err == nil {
