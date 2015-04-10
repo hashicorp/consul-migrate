@@ -79,13 +79,21 @@ func TestMigrator_migrate(t *testing.T) {
 	defer m.Close()
 
 	// Perform the migration
-	if err := m.Migrate(); err != nil {
-		t.Fatalf("err: %s", err)
+	if _, err := m.Migrate(); err != nil {
+		t.Fatalf("err: %s %s", err)
 	}
 
 	// Check that the new BoltStore was created
-	if _, err := os.Stat(filepath.Join(dir, "raft", boltFilename)); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, raftPath, boltFilename)); err != nil {
 		t.Fatalf("missing bolt file: %s", err)
+	}
+
+	// Check that the MDB store was backed up
+	if _, err := os.Stat(filepath.Join(dir, raftPath, mdbPath)); err == nil {
+		t.Fatalf("MDB dir was not moved")
+	}
+	if _, err := os.Stat(filepath.Join(dir, raftPath, mdbBackupPath)); err != nil {
+		t.Fatalf("Missing MDB backup dir")
 	}
 
 	// Check that the BoltStore now has the indexes

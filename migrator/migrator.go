@@ -16,6 +16,10 @@ const (
 	// Path to the raft directory
 	raftPath = "raft"
 
+	// Path to the legacy MDB data and its backup location
+	mdbPath       = "mdb"
+	mdbBackupPath = "mdb.backup"
+
 	// The name of the BoltDB file in the raft path
 	boltFilename = "raft.db"
 
@@ -158,21 +162,44 @@ func (m *Migrator) migrateLogStore() error {
 	return nil
 }
 
+// archiveMDB moves the original MDB data directory to an archived
+// version. This allows the migrator to return fast if the data
+// has already been migrated to BoltDB.
+func (m *Migrator) archiveMDB() error {
+	orig := filepath.Join(m.dataDir, raftPath, mdbPath)
+	backup := filepath.Join(m.dataDir, raftPath, mdbBackupPath)
+	return os.Rename(orig, backup)
+}
+
 // Migrate is the high-level function we call when we want to attempt
 // to migrate all of our LMDB data into BoltDB. If an error is
 // encountered, the BoltStore is nuked from disk, since it is useless.
 // The migration can be attempted again, as the LMDB data should
-// still be intact.
-func (m *Migrator) Migrate() error {
+// still be intact. Returns a bool indicating whether a migration
+// was completed, and any error.
+func (m *Migrator) Migrate() (bool, error) {
+	boltFile := filepath.Join(m.dataDir, raftPath, boltFilename)
+	mdbDir := filepath.Join(m.dataDir, raftPath, mdbPath)
+
+	// Check if we should attempt a migration
+	if _, err := os.Stat(mdbDir); os.IsNotExist(err) {
+		return false, nil
+	}
+
+	// Perform the migration
 	if err := m.migrateStableStore(); err != nil {
-		os.Remove(filepath.Join(m.dataDir, raftPath, boltFilename))
-		return fmt.Errorf("Failed to migrate stable store: %v", err)
+		os.Remove(boltFile)
+		return false, fmt.Errorf("Failed to migrate stable store: %v", err)
 	}
 	if err := m.migrateLogStore(); err != nil {
-		os.Remove(filepath.Join(m.dataDir, raftPath, boltFilename))
-		return fmt.Errorf("Failed to migrate log store: %v", err)
+		os.Remove(boltFile)
+		return false, fmt.Errorf("Failed to migrate log store: %v", err)
 	}
-	return nil
+	if err := m.archiveMDB(); err != nil {
+		os.Remove(boltFile)
+		return false, fmt.Errorf("Failed to backup MDB: %v", err)
+	}
+	return true, nil
 }
 
 // Close closes the handles to our underlying raft back-ends.

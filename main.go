@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/hashicorp/consul-migrate/migrator"
 )
@@ -30,9 +31,17 @@ func realMain(args []string) int {
 	}
 	defer m.Close()
 
-	if err := m.Migrate(); err != nil {
+	start := time.Now()
+	migrated, err := m.Migrate()
+	if err != nil {
 		fmt.Println(err.Error())
 		return 1
+	}
+
+	if migrated {
+		fmt.Printf("Migration completed in %s", time.Now().Sub(start))
+	} else {
+		fmt.Println("Migration has already been completed")
 	}
 	return 0
 }
