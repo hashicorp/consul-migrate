@@ -178,6 +178,10 @@ func (m *Migrator) Migrate() (bool, error) {
 
 	// Check if we should attempt a migration
 	if _, err := os.Stat(mdbDir); os.IsNotExist(err) {
+		if _, err := os.Stat(boltFile); os.IsNotExist(err) {
+			return false, fmt.Errorf(
+				"Directory '%s' is not a consul data dir", m.dataDir)
+		}
 		return false, nil
 	}
 

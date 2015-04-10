@@ -159,3 +159,24 @@ func TestMigrator_migrate(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrator_archiveMDB(t *testing.T) {
+	dir := testRaftDir(t)
+	defer os.RemoveAll(dir)
+
+	m, err := New(dir)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	// Move the MDB dir to its backup location
+	if err := m.archiveMDB(); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	// Check that it was moved
+	_, err = os.Stat(filepath.Join(dir, raftPath, mdbBackupPath))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+}

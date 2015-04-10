@@ -27,7 +27,7 @@ func realMain(args []string) int {
 	// Create the migrator
 	m, err := migrator.New(args[1])
 	if err != nil {
-		fmt.Printf("Error creating migrator: %s", err)
+		fmt.Printf("Error creating migrator: %s\n", err)
 		return 1
 	}
 
@@ -35,13 +35,13 @@ func realMain(args []string) int {
 	start := time.Now()
 	migrated, err := m.Migrate()
 	if err != nil {
-		fmt.Printf("Migration failed: %s", err)
+		fmt.Printf("Migration failed: %s\n", err)
 		return 1
 	}
 
 	// Check the result
 	if migrated {
-		fmt.Printf("Migration completed in %s", time.Now().Sub(start))
+		fmt.Printf("Migration completed in %s\n", time.Now().Sub(start))
 	} else {
 		fmt.Println("Migration has already been completed")
 	}
