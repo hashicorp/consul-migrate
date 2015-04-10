@@ -196,27 +196,27 @@ func (m *Migrator) Migrate() (bool, error) {
 	}
 	defer m.boltStore.Close()
 
+	// Ensure we clean up the temp file during failure cases
+	defer os.Remove(m.boltTempPath)
+
 	// Migrate the stable store
 	if err := m.migrateStableStore(); err != nil {
-		os.Remove(m.boltTempPath)
 		return false, fmt.Errorf("Failed to migrate stable store: %v", err)
 	}
 
 	// Migrate the log store
 	if err := m.migrateLogStore(); err != nil {
-		os.Remove(m.boltTempPath)
 		return false, fmt.Errorf("Failed to migrate log store: %v", err)
 	}
 
 	// Activate the new BoltDB file
 	if err := os.Rename(m.boltTempPath, m.boltPath); err != nil {
-		os.Remove(m.boltTempPath)
 		return false, fmt.Errorf("Failed to move BoltDB file: %s", err)
 	}
 
 	// Move the old MDB dir to its backup location
 	if err := os.Rename(m.mdbPath, m.mdbBackupPath); err != nil {
-		os.Remove(m.boltTempPath)
+		os.Remove(m.boltPath)
 		return false, fmt.Errorf("Failed to move MDB dir: %v", err)
 	}
 	return true, nil

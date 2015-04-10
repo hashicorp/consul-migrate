@@ -92,6 +92,11 @@ func TestMigrator_migrate(t *testing.T) {
 		t.Fatalf("err: %s %s", err)
 	}
 
+	// Check that the temp bolt file was removed
+	if _, err := os.Stat(m.boltTempPath); err == nil {
+		t.Fatalf("did not remove temp bolt file")
+	}
+
 	// Check that the new BoltStore was created
 	if _, err := os.Stat(m.boltPath); err != nil {
 		t.Fatalf("missing bolt file: %s", err)
