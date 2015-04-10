@@ -54,9 +54,17 @@ func usage() string {
 Consul-migrate is a tool for moving Consul server data from LMDB to BoltDB.
 This is a prerequisite for upgrading to Consul >= 0.5.1.
 
-This utility migrates both the Raft log and the KV store, and preserves all
-data and indexes. The original MDB data folder will *NOT* be modified during
-this process, nor will it be automatically deleted. If anything should fail,
-the migration can be re-attempted.
+This utility will migrate all of the data Consul needs to pick up right where
+it left off. The original MDB data folder will *NOT* be modified during the
+migration process. If any part of the migration fails, it is safe to try again.
+This command is also idempotent, and will not re-attempt a migration which has
+already been completed.
+
+Upon successful migration, the MDB data directory will be renamed so that it
+includes the ".backup" extension. Once you have verified Consul is operational
+after the migration, and contains all of the expected data, it is safe to
+archive the "mdb.backup" directory and remove it from the Consul server.
+
+Returns 0 on successful migration or no-op, 1 for errors.
 `
 }
