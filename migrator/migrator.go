@@ -177,10 +177,6 @@ func (m *Migrator) migrateLogStore() error {
 func (m *Migrator) Migrate() (bool, error) {
 	// Check if we should attempt a migration
 	if _, err := os.Stat(m.mdbPath); os.IsNotExist(err) {
-		if _, err := os.Stat(m.boltPath); os.IsNotExist(err) {
-			return false, fmt.Errorf(
-				"Directory '%s' is not a consul data dir", m.dataDir)
-		}
 		return false, nil
 	}
 

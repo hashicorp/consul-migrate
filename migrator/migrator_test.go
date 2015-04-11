@@ -264,3 +264,24 @@ func TestMigrator_migrate_fails(t *testing.T) {
 		t.Fatalf("err: %s", err)
 	}
 }
+
+func TestMigrator_migrate_noop(t *testing.T) {
+	dir, err := ioutil.TempDir("", "consul-migrate")
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	defer os.RemoveAll(dir)
+
+	// Should return no-op if MDB dir doesn't exist
+	m, err := New(dir)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	migrated, err := m.Migrate()
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if migrated {
+		t.Fatalf("should not have migrated")
+	}
+}

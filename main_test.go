@@ -47,3 +47,38 @@ func TestMain_help(t *testing.T) {
 		t.Fatalf("bad: %s", string(out))
 	}
 }
+
+func TestMain_noop(t *testing.T) {
+	fh, err := ioutil.TempFile("", "consul-migrate")
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	defer os.Remove(fh.Name())
+
+	stdoutOrig := *os.Stdout
+	os.Stdout = fh
+	defer func() {
+		os.Stdout = &stdoutOrig
+	}()
+
+	dir, err := ioutil.TempDir("", "consul-migrate")
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	defer os.RemoveAll(dir)
+
+	if code := realMain([]string{"consul-migrate", dir}); code != 0 {
+		t.Fatalf("bad: %d", code)
+	}
+
+	if _, err := fh.Seek(0, 0); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	out, err := ioutil.ReadAll(fh)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if !strings.HasPrefix(string(out), "Nothing to do") {
+		t.Fatalf("bad: %s", string(out))
+	}
+}

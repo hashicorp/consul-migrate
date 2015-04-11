@@ -43,7 +43,7 @@ func realMain(args []string) int {
 	if migrated {
 		fmt.Printf("Migration completed in %s\n", time.Now().Sub(start))
 	} else {
-		fmt.Println("Migration has already been completed")
+		fmt.Printf("Nothing to do for directory '%s'\n", args[1])
 	}
 	return 0
 }
