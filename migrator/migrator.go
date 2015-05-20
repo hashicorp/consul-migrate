@@ -50,6 +50,10 @@ var (
 // transition, it is necessary to copy data out of our LMDB store
 // and create a new BoltStore with the same data.
 type Migrator struct {
+	// Channels used to expose what's happening internally
+	// during a migration.
+	ProgressCh chan *ProgressUpdate
+
 	dataDir   string                // The Consul data-dir
 	mdbStore  *raftmdb.MDBStore     // The legacy MDB environment
 	boltStore *raftboltdb.BoltStore // Handle for the new store
@@ -72,7 +76,8 @@ func New(dataDir string) (*Migrator, error) {
 
 	// Create the struct
 	m := &Migrator{
-		dataDir: dataDir,
+		ProgressCh: make(chan *ProgressUpdate, 128),
+		dataDir:    dataDir,
 
 		raftPath:      filepath.Join(dataDir, raftDir),
 		mdbPath:       filepath.Join(dataDir, raftDir, mdbDir),
@@ -122,17 +127,19 @@ func (m *Migrator) boltConnect(file string) error {
 // and writes them into the destination. There are only a handful
 // of keys we need, so we copy them explicitly.
 func (m *Migrator) migrateStableStore() error {
-	for _, key := range stableStoreKeys {
+	for i, key := range stableStoreKeys {
 		val, err := m.mdbStore.Get(key)
 		if err != nil {
 			if err.Error() != "not found" {
 				return fmt.Errorf("Error getting key '%s': %s", string(key), err)
 			}
+			m.sendProgress("Migrating stable store", i, len(stableStoreKeys))
 			continue
 		}
 		if err := m.boltStore.Set(key, val); err != nil {
 			return fmt.Errorf("Error storing key '%s': %s", string(key), err)
 		}
+		m.sendProgress("Migrating stable store", i, len(stableStoreKeys))
 	}
 	return nil
 }
@@ -155,7 +162,9 @@ func (m *Migrator) migrateLogStore() error {
 	if last == 0 {
 		return errLastIndexZero
 	}
+	total := int(last - first)
 
+	current := 0
 	for i := first; i <= last; i++ {
 		log := &raft.Log{}
 		if err := m.mdbStore.GetLog(i, log); err != nil {
@@ -164,6 +173,8 @@ func (m *Migrator) migrateLogStore() error {
 		if err := m.boltStore.StoreLog(log); err != nil {
 			return err
 		}
+		m.sendProgress("Migrating log store", current, total)
+		current++
 	}
 	return nil
 }
@@ -215,4 +226,24 @@ func (m *Migrator) Migrate() (bool, error) {
 		return false, fmt.Errorf("Failed to move MDB dir: %v", err)
 	}
 	return true, nil
+}
+
+// sendProgress is used to send a progress update message to the progress
+// channel. Sending is a non-blocking operation. It is the responsibility
+// of the caller to ensure they drain the queue promptly to avoid missing
+// progress update messages.
+func (m *Migrator) sendProgress(op string, done, total int) {
+	update := ProgressUpdate{op, (float64(done) / float64(total)) * 100}
+	select {
+	case m.ProgressCh <- &update:
+	default:
+	}
+}
+
+// ProgressUpdate is used to communicate internal progress data about
+// an in-flight migration. The Op is the current operation, and the
+// Progress indicates a percentage of migrations completed.
+type ProgressUpdate struct {
+	Op       string
+	Progress float64
 }

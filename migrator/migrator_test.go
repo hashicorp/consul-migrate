@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/raft"
 )
@@ -127,7 +128,7 @@ func TestMigrator_migrate(t *testing.T) {
 
 	// Perform the migration
 	if _, err := m.Migrate(); err != nil {
-		t.Fatalf("err: %s %s", err)
+		t.Fatalf("err: %s", err)
 	}
 
 	// Check that the temp bolt file was removed
@@ -283,5 +284,97 @@ func TestMigrator_migrate_noop(t *testing.T) {
 	}
 	if migrated {
 		t.Fatalf("should not have migrated")
+	}
+}
+
+func TestMigrator_sendProgress(t *testing.T) {
+	dir, err := ioutil.TempDir("", "consul-migrate")
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	defer os.RemoveAll(dir)
+
+	// Create the migrator
+	m, err := New(dir)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	// Send a progress update
+	m.sendProgress("doing something", 5, 20)
+
+	// Check the message and format
+	select {
+	case update := <-m.ProgressCh:
+		if update.Op != "doing something" {
+			t.Fatalf("bad: %#v", update)
+		}
+		if update.Progress != 25 {
+			t.Fatalf("bad: %#v", update)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for update")
+	}
+}
+
+func TestMigrator_progressUpdate(t *testing.T) {
+	dir := testRaftDir(t)
+	defer os.RemoveAll(dir)
+
+	// Create the migrator
+	m, err := New(dir)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	// Listen for progress updates in the background
+	recvd := 0
+	doneCh := make(chan struct{})
+	defer close(doneCh)
+	go func() {
+		for {
+			select {
+			case <-m.ProgressCh:
+				recvd++
+			case <-doneCh:
+				return
+			}
+		}
+	}()
+
+	// Perform the migration
+	if _, err := m.Migrate(); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	// Check if we got the updates
+	if recvd == 0 {
+		t.Fatalf("missing progress updates")
+	}
+}
+
+func TestMigrator_progressUpdate_nonblocking(t *testing.T) {
+	dir := testRaftDir(t)
+	defer os.RemoveAll(dir)
+
+	// Create the migrator
+	m, err := New(dir)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	// Replace the progress channel with an unbuffered one
+	m.ProgressCh = make(chan *ProgressUpdate, 1)
+
+	// Run the migration. This should not block trying to
+	// push progress messages onto the channel. Simulates
+	// a consumer not pulling messages off of the channel.
+	if _, err := m.Migrate(); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	// Should have the single update in the channel
+	if len(m.ProgressCh) != 1 {
+		t.Fatalf("missing progress update")
 	}
 }
