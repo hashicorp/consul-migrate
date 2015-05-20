@@ -31,6 +31,11 @@ func realMain(args []string) int {
 		return 1
 	}
 
+	// Handle progress output
+	doneCh := make(chan struct{})
+	defer close(doneCh)
+	go handleProgress(m.ProgressCh, doneCh)
+
 	// Perform the migration
 	start := time.Now()
 	migrated, err := m.Migrate()
@@ -46,6 +51,41 @@ func realMain(args []string) int {
 		fmt.Printf("Nothing to do for directory '%s'\n", args[1])
 	}
 	return 0
+}
+
+// handleProgress is used to dump progress information to the console while
+// a migration is in flight. This allows the user to monitor a migration.
+func handleProgress(ch <-chan *migrator.ProgressUpdate, doneCh <-chan struct{}) {
+	go func() {
+		var lastOp string
+		var lastProgress float64
+		lastFlush := time.Now()
+		for {
+			select {
+			case update := <-ch:
+				switch {
+				case lastOp != update.Op:
+					lastProgress = update.Progress
+					lastOp = update.Op
+					fmt.Println(update.Op)
+					fmt.Printf("%.2f%%\n", update.Progress)
+
+				case update.Progress-lastProgress >= 5:
+					fallthrough
+
+				case time.Now().Sub(lastFlush) > time.Second:
+					fallthrough
+
+				case update.Progress == 100:
+					lastFlush = time.Now()
+					lastProgress = update.Progress
+					fmt.Printf("%.2f%%\n", update.Progress)
+				}
+			case <-doneCh:
+				return
+			}
+		}
+	}()
 }
 
 func usage() string {

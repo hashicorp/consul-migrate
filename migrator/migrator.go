@@ -133,13 +133,13 @@ func (m *Migrator) migrateStableStore() error {
 			if err.Error() != "not found" {
 				return fmt.Errorf("Error getting key '%s': %s", string(key), err)
 			}
-			m.sendProgress("Migrating stable store", i, len(stableStoreKeys))
+			m.sendProgress("Migrating stable store", i+1, len(stableStoreKeys))
 			continue
 		}
 		if err := m.boltStore.Set(key, val); err != nil {
 			return fmt.Errorf("Error storing key '%s': %s", string(key), err)
 		}
-		m.sendProgress("Migrating stable store", i, len(stableStoreKeys))
+		m.sendProgress("Migrating stable store", i+1, len(stableStoreKeys))
 	}
 	return nil
 }
@@ -173,8 +173,8 @@ func (m *Migrator) migrateLogStore() error {
 		if err := m.boltStore.StoreLog(log); err != nil {
 			return err
 		}
-		m.sendProgress("Migrating log store", current, total)
 		current++
+		m.sendProgress("Migrating log store", current, total)
 	}
 	return nil
 }
