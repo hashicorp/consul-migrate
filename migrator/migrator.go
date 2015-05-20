@@ -127,19 +127,23 @@ func (m *Migrator) boltConnect(file string) error {
 // and writes them into the destination. There are only a handful
 // of keys we need, so we copy them explicitly.
 func (m *Migrator) migrateStableStore() error {
+	op := "Migrating stable store"
+	m.sendProgress(op, 0, 1)
+
+	total := len(stableStoreKeys)
 	for i, key := range stableStoreKeys {
 		val, err := m.mdbStore.Get(key)
 		if err != nil {
 			if err.Error() != "not found" {
 				return fmt.Errorf("Error getting key '%s': %s", string(key), err)
 			}
-			m.sendProgress("Migrating stable store", i+1, len(stableStoreKeys))
+			m.sendProgress(op, i+1, total)
 			continue
 		}
 		if err := m.boltStore.Set(key, val); err != nil {
 			return fmt.Errorf("Error storing key '%s': %s", string(key), err)
 		}
-		m.sendProgress("Migrating stable store", i+1, len(stableStoreKeys))
+		m.sendProgress(op, i+1, total)
 	}
 	return nil
 }
@@ -147,6 +151,9 @@ func (m *Migrator) migrateStableStore() error {
 // migrateLogStore is like migrateStableStore, but iterates over
 // all of our Raft logs and copies them into the new BoltStore.
 func (m *Migrator) migrateLogStore() error {
+	op := "Migrating log store"
+	m.sendProgress(op, 0, 1)
+
 	first, err := m.mdbStore.FirstIndex()
 	if err != nil {
 		return err
@@ -174,8 +181,37 @@ func (m *Migrator) migrateLogStore() error {
 			return err
 		}
 		current++
-		m.sendProgress("Migrating log store", current, total)
+		m.sendProgress(op, current, total)
 	}
+	return nil
+}
+
+// activateBoltStore wraps moving the Bolt file into place after
+// a data migration has finished successfully.
+func (m *Migrator) activateBoltStore() error {
+	op := "Moving Bolt file into place"
+	m.sendProgress(op, 0, 1)
+
+	if err := os.Rename(m.boltTempPath, m.boltPath); err != nil {
+		return err
+	}
+
+	m.sendProgress(op, 1, 1)
+	return nil
+}
+
+// archiveMDBStore is used to move the LMDB data directory to a backup
+// location so that it is not used by Consul again.
+func (m *Migrator) archiveMDBStore() error {
+	op := "Archiving LMDB data"
+	m.sendProgress(op, 0, 1)
+
+	if err := os.Rename(m.mdbPath, m.mdbBackupPath); err != nil {
+		os.Remove(m.boltPath)
+		return err
+	}
+
+	m.sendProgress(op, 1, 1)
 	return nil
 }
 
@@ -216,15 +252,15 @@ func (m *Migrator) Migrate() (bool, error) {
 	}
 
 	// Activate the new BoltDB file
-	if err := os.Rename(m.boltTempPath, m.boltPath); err != nil {
-		return false, fmt.Errorf("Failed to move BoltDB file: %s", err)
+	if err := m.activateBoltStore(); err != nil {
+		return false, fmt.Errorf("Failed to activate Bolt store: %s", err)
 	}
 
 	// Move the old MDB dir to its backup location
-	if err := os.Rename(m.mdbPath, m.mdbBackupPath); err != nil {
-		os.Remove(m.boltPath)
-		return false, fmt.Errorf("Failed to move MDB dir: %v", err)
+	if err := m.archiveMDBStore(); err != nil {
+		return false, fmt.Errorf("Failed to archive LMDB data: %s", err)
 	}
+
 	return true, nil
 }
 
